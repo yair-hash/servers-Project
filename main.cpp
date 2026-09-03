@@ -1,36 +1,86 @@
 #include <iostream>
 #include <thread>
+#include <string>
+#include <sstream>
 #include <chrono>
+#include <atomic>
 #include "NodeNetwork.h"
 
-int main() {
-    NodeNetwork net;
-    
-    // הפעלת השרת על פורט מוגדר
-    net.startServer(8080);
+// דגל סנכרון לסגירה נקי של ה-Thread
+std::atomic<bool> keepRunning(true);
 
-    // דוגמה להתחברות לשרת שכן (ניתן להוסיף עד 4 שרתים נוספים)
-    // net.connectToPeer(1, "127.0.0.1", 8081);
-
-    while (true) {
+// מתודת רקע לקבלת חיבורים והודעות
+void receiveWorker(NodeNetwork& net) {
+    while (keepRunning) {
         // בדיקת חיבורים נכנסים חדשים
         net.acceptIncomingConnections();
 
-        // 3. בדיקה אם לא נשלח כלום מאף שרת
-        if (net.isNetworkEmpty()) {
-            std::cout << "No messages received from any server..." << std::endl;
-        } else {
-            // 2. קבלת הודעה משרת מזהה 1
-            std::string msg = net.receiveMessage(1);
+        // מעבר על מזהים אפשריים ברשת לקבלת הודעות (למשל מ-1 עד 10)
+        for (int id = 1; id <= 10; ++id) {
+            std::string msg = net.receiveMessage(id);
             if (!msg.empty()) {
-                std::cout << "New message from Node 1: " << msg << std::endl;
+                std::cout << "\n[Message from Node " << id << "]: " << msg << std::endl;
+                std::cout << "Enter command (<NodeID> <Message>): " << std::flush;
             }
         }
 
-        // 1. שליחת הודעה לשרת מזהה 1
-        // net.sendMessage(1, "Hello Node 1");
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+}
 
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+int main() {
+    NodeNetwork net;
+
+    // 1. הפעלת השרת המקומי (שני את הפורט לפי המחשב הנוכחי)
+    int myPort = 8080; 
+    if (!net.startServer(myPort)) {
+        std::cerr << "Failed to start server on port " << myPort << std::endl;
+        return 1;
+    }
+    std::cout << "Server listening on port " << myPort << "...\n";
+
+    // 2. התחברות לשרתים שכנים במידת הצורך (דוגמה להתחברות ל-Node 1)
+     net.connectToPeer(1, "10.100.102.10", 8080);
+
+    // 3. הפעלת Thread הרקע לקבלה
+    std::thread rxThread(receiveWorker, std::ref(net));
+
+    std::cout << "Ready! Enter messages in format: <NodeID> <Message>\n";
+    std::cout << "Example: 1 Hello World\n";
+    std::cout << "--------------------------------------------------\n";
+
+    // 4. לולאה ראשית לקריאה מהמקלדת ושליחה
+    std::string line;
+    while (keepRunning && std::getline(std::cin, line)) {
+        if (line.empty()) continue;
+        if (line == "exit") {
+            keepRunning = false;
+            break;
+        }
+
+        std::stringstream ss(line);
+        int targetId;
+        std::string message;
+
+        // חילוץ ה-ID המיועד והטקסט
+        if (ss >> targetId) {
+            std::getline(ss >> std::ws, message); // קריאת שאר השורה כהודעה
+            
+            if (!message.empty()) {
+                bool sent = net.sendMessage(targetId, message);
+                if (sent) {
+                    std::cout << "-> Sent to Node " << targetId << ": " << message << std::endl;
+                } else {
+                    std::cout << "x Failed to send to Node " << targetId << " (Not connected)" << std::endl;
+                }
+            }
+        } else {
+            std::cout << "Invalid format. Use: <NodeID> <Message>" << std::endl;
+        }
+    }
+
+    if (rxThread.joinable()) {
+        rxThread.join();
     }
 
     return 0;
